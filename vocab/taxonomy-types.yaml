@@ -1,0 +1,126 @@
+# Org-wide type vocabulary for taxonomy.yaml.
+#
+# The bootstrap agent uses ONLY the type names defined here when generating a
+# target repo's taxonomy.yaml. Identifiers in the target repo that don't map
+# to a type here are listed under `unmapped:` in the generated taxonomy —
+# never invented as new types.
+#
+# Add new types to this file (in the tooling repo) and re-run `bootstrap` to
+# re-classify; do not let target repos drift.
+
+version: 1
+
+types:
+  # ------------------------------------------------------------------ services
+  - name: service
+    description: A deployable unit with its own lifecycle (binary, container, function)
+    required_fields: [id, description]
+    optional_fields: [modes, docs, deployment_context]
+    examples:
+      - id: data-exporter-kafka
+        type: service
+
+  - name: mode
+    description: A run-mode of a service (e.g. server, worker, migrator)
+    required_fields: [id, service]
+    optional_fields: [binary, helm_chart, docs]
+
+  - name: utility
+    description: Non-service binary packaged alongside (CLI, test client, ops tool)
+    required_fields: [id, description]
+    optional_fields: [docs]
+
+  # ------------------------------------------------------------------ APIs
+  - name: api:grpc
+    description: gRPC service exposed by the system
+    required_fields: [id, description]
+    optional_fields: [docs, spec]
+
+  - name: api:rest
+    description: HTTP/REST endpoint(s) exposed by the system
+    required_fields: [id, description]
+    optional_fields: [docs, spec, base_path]
+
+  - name: api:graphql
+    description: GraphQL endpoint exposed by the system
+    required_fields: [id, description]
+    optional_fields: [docs, spec]
+
+  - name: api:messaging
+    description: Message-bus consumer or producer (Kafka, PubSub, RabbitMQ, SQS, …)
+    required_fields: [id, description]
+    optional_fields: [docs, transport]
+
+  # ------------------------------------------------------------------ data
+  - name: topic
+    description: A named topic/stream/queue on a message bus
+    required_fields: [id, description]
+    optional_fields: [transport, docs]
+
+  - name: entity
+    description: A first-class domain object the system reads or writes
+    required_fields: [id, description]
+    optional_fields: [docs, storage]
+
+  - name: storage
+    description: A persistence backend (DB, object store, cache)
+    required_fields: [id, description]
+    optional_fields: [docs, kind]
+
+  # ------------------------------------------------------------------ observability
+  - name: metric
+    description: A Prometheus / OpenTelemetry metric exposed by the system
+    required_fields: [id, description]
+    optional_fields: [prometheus, otel, docs]
+
+  - name: log_event
+    description: A named structured-log event the system emits and operators rely on
+    required_fields: [id, description]
+    optional_fields: [docs]
+
+  - name: trace_span
+    description: A named span emitted via OpenTelemetry / similar
+    required_fields: [id, description]
+    optional_fields: [docs]
+
+  # ------------------------------------------------------------------ reliability
+  - name: failure
+    description: A known failure mode with recovery semantics
+    required_fields: [id, description, recovery]
+    optional_fields: [docs]
+
+  - name: invariant
+    description: A property the system promises to uphold (cited from an ADR)
+    required_fields: [id, description, adr]
+    optional_fields: [docs]
+
+  - name: adr
+    description: An architecture decision record
+    required_fields: [id, title, status]
+    optional_fields: [supersedes, superseded_by, docs]
+
+  # ------------------------------------------------------------------ config / surface
+  - name: config_key
+    description: A configuration knob the operator can set (flag, env var, key)
+    required_fields: [id, description]
+    optional_fields: [default, env_var, flag, docs]
+
+  - name: feature_flag
+    description: A runtime feature toggle
+    required_fields: [id, description, default]
+    optional_fields: [owner, docs]
+
+  # ------------------------------------------------------------------ external dependencies
+  - name: integration
+    description: An external system this service talks to (upstream or downstream)
+    required_fields: [id, role]
+    optional_fields: [docs, direction]
+
+# ----------------------------------------------------------------------- usage
+# Bootstrap agent rules:
+#   1. Use only `name:` values from `types:` above.
+#   2. Honour `required_fields` — emit a per-entry warning if missing.
+#   3. Anything that doesn't fit goes under `unmapped:` in the generated
+#      taxonomy.yaml — never as a new type.
+#   4. To add a new type, edit THIS file, bump the version, re-tag the
+#      tooling repo, and re-run bootstrap on target repos in `refresh` mode.

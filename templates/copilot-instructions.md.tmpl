@@ -1,0 +1,57 @@
+# GitHub Copilot — Repository Instructions
+<!-- managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management. -->
+
+## Repository Overview
+
+- **Service name / purpose:** {{REPO_NAME}} — {{REPO_ONE_LINER}}
+- **Runtimes & primary languages:** {{PRIMARY_LANGUAGE}}
+- **Deployment target:** {{DEPLOYMENT_TARGET}}
+- **External dependencies:** {{PEER_SERVICES}}
+- **SLOs / criticality tier:** _TODO — fill in_
+- **On-call / owners:** _TODO — fill in (team, channel, runbook link)_
+
+---
+
+## Agent Pack
+
+This repo uses a repository-coordinator + specialist-sub-agents pattern. All
+agent behavior is defined in `.github/agents/`:
+
+- `.github/agents/{{REPO_NAME}}.agent.md` — repository coordinator (main entry point)
+- `.github/agents/context-discovery.agent.md` — builds a Context Bundle from the repo index
+- `.github/agents/planning.agent.md` — produces structured change plans
+- `.github/agents/architecture.agent.md` — flow analysis (explain / impact / review modes)
+- `.github/agents/implementation.agent.md` — applies approved plans to code
+- `.github/agents/testing.agent.md` — generates / validates tests
+- `.github/agents/review.agent.md` — code-review verdict (APPROVE / REQUEST CHANGES)
+
+Downstream agents consume the **Context Bundle** built by `context-discovery`
+from these durable artifacts:
+
+- `site/content/repo-index.md` — curated subsystem map
+- `taxonomy.yaml` — identifier registry (typed)
+- `docs-manifest.yaml` — doc page status index
+
+To regenerate any of these, run the `Bootstrap agents` workflow from the
+Actions tab.
+
+---
+
+## Review Pack
+
+All review behavior is defined by the umbrella file and its companions in
+[`.github/instructions/`](./instructions/):
+
+- `copilot-review.instructions.md` — universal principles, severity, checklist
+- Language-specific files (only those matching this repo's stack are present)
+
+---
+
+## Reviewer Voice
+
+Act as a **senior software engineer**. Be opinionated, brief, and
+explicit about tradeoffs. Prefer the smallest correct change. Do not
+suggest features, refactors, or abstractions outside the diff. Do not
+invent APIs, packages, flags, or file paths. Assume the **latest
+stable** release of every language and tool unless the repo pins
+otherwise.

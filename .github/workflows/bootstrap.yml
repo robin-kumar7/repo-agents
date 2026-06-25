@@ -1,0 +1,233 @@
+name: Bootstrap repo agents (reusable)
+
+# Reusable workflow. Called from a target repo's .github/workflows/bootstrap-agents.yml
+# via `uses: org/repo-agent-bootstrap/.github/workflows/bootstrap.yml@v1`.
+#
+# Generates repo-specific agents + indices and opens a DRAFT PR. Never commits to default branch.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "full | refresh | repo-index-only | agents-only"
+        required: false
+        default: "full"
+        type: string
+      model:
+        description: "LLM model id (provider-specific)"
+        required: false
+        default: "claude-opus-4-5"
+        type: string
+      templates_ref:
+        description: "Git ref of the templates repo to use"
+        required: false
+        default: "v1"
+        type: string
+      force_overwrite:
+        description: "If true, bootstrap may overwrite files lacking the management sentinel. USE WITH CARE — prior content of hand-edited files will be lost."
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Prevent concurrent bootstraps stomping on the same branch.
+concurrency:
+  group: bootstrap-agents-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Checkout bootstrap templates
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/repo-agent-bootstrap
+          ref: ${{ inputs.templates_ref }}
+          path: .bootstrap
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          case "${{ inputs.mode }}" in
+            full|refresh|repo-index-only|agents-only) ;;
+            *) echo "::error::invalid mode '${{ inputs.mode }}'"; exit 1 ;;
+          esac
+          test -f .bootstrap/agents/bootstrap.agent.md
+          test -d .bootstrap/templates
+          test -f .bootstrap/vocab/taxonomy-types.yaml
+
+      - name: Run bootstrap agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: ${{ inputs.model }}
+          prompt_file: .bootstrap/agents/bootstrap.agent.md
+          allowed_tools: "Read,Write,Edit,Glob,Grep,Bash(make:*),Bash(go:*),Bash(cat:*),Bash(find:*),Bash(ls:*),Bash(wc:*)"
+        env:
+          BOOTSTRAP_MODE: ${{ inputs.mode }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
+          TEMPLATES_DIR: .bootstrap/templates
+          VOCAB_FILE: .bootstrap/vocab/taxonomy-types.yaml
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_URL: ${{ github.event.repository.html_url }}
+
+      - name: Clean up templates checkout
+        if: always()
+        run: rm -rf .bootstrap
+
+      # ------------------------------------------------------------------
+      # SAFETY GUARDS — deterministic, NOT LLM-dependent.
+      #
+      # The bootstrap agent is told (in agents/bootstrap.agent.md) to:
+      #   1. write only to the allowlist of paths below; and
+      #   2. skip files that already exist but lack the management sentinel.
+      #
+      # This step enforces both rules with `git`. If the agent strays — either
+      # by writing outside the allowlist or by producing a managed file
+      # without the sentinel — we abort BEFORE opening the PR. Nothing reaches
+      # the user for review unless the diff is clean.
+      # ------------------------------------------------------------------
+      - name: Validate diff against allowlist
+        id: validate
+        run: |
+          set -euo pipefail
+
+          # Paths the bootstrap is allowed to create or modify.
+          # Exact files:
+          ALLOWED_FILES=(
+            "site/content/repo-index.md"
+            "taxonomy.yaml"
+            "docs-manifest.yaml"
+            ".github/copilot-instructions.md"
+            ".github/workflows/agent-index.yml"
+            ".agent-index/.gitkeep"
+          )
+          # Directory prefixes (any file under these is allowed):
+          ALLOWED_PREFIXES=(
+            ".github/agents/"
+            ".github/instructions/"
+          )
+
+          # `git status --porcelain=v1` lists every changed path (new, modified, deleted)
+          # in a parseable form. We strip the 2-char status prefix.
+          mapfile -t changed < <(git status --porcelain=v1 | awk '{ $1=""; sub(/^ +/,""); print }')
+
+          if [[ ${#changed[@]} -eq 0 ]]; then
+            echo "::warning::bootstrap produced no changes"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          unexpected=()
+          for path in "${changed[@]}"; do
+            # Handle rename pairs "old -> new" — take the new path.
+            path="${path##* -> }"
+            allowed=false
+            for f in "${ALLOWED_FILES[@]}"; do
+              [[ "$path" == "$f" ]] && { allowed=true; break; }
+            done
+            if [[ "$allowed" == "false" ]]; then
+              for p in "${ALLOWED_PREFIXES[@]}"; do
+                [[ "$path" == "$p"* ]] && { allowed=true; break; }
+              done
+            fi
+            if [[ "$allowed" == "false" ]]; then
+              unexpected+=("$path")
+            fi
+          done
+
+          if [[ ${#unexpected[@]} -gt 0 ]]; then
+            echo "::error::bootstrap touched files outside the allowlist:"
+            for p in "${unexpected[@]}"; do echo "  - $p"; done
+            echo
+            echo "Allowed exact files: ${ALLOWED_FILES[*]}"
+            echo "Allowed prefixes:    ${ALLOWED_PREFIXES[*]}"
+            exit 1
+          fi
+
+          echo "diff is within allowlist (${#changed[@]} files)"
+
+      - name: Verify management sentinel on every changed file
+        if: steps.validate.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+
+          # Every changed file (except the placeholder) must carry the
+          # management sentinel in its first 40 lines. The window is 40 to
+          # accommodate the coordinator template's YAML frontmatter (~28 lines)
+          # plus headroom. This is what makes future regenerations safe to
+          # overwrite the same file.
+          SENTINEL='managed-by: repo-agent-bootstrap'
+
+          mapfile -t changed < <(git status --porcelain=v1 | awk '{ $1=""; sub(/^ +/,""); print }')
+          missing=()
+          for path in "${changed[@]}"; do
+            path="${path##* -> }"
+            [[ "$path" == ".agent-index/.gitkeep" ]] && continue
+            [[ -f "$path" ]] || continue   # skip deletions
+            if ! head -n 40 "$path" | grep -qF "$SENTINEL"; then
+              missing+=("$path")
+            fi
+          done
+
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::these files were generated without the management sentinel:"
+            for p in "${missing[@]}"; do echo "  - $p"; done
+            echo
+            echo "Every generated file must contain '$SENTINEL' in its first 40 lines."
+            echo "This prevents future bootstrap runs from clobbering hand-edited files."
+            exit 1
+          fi
+
+          echo "all ${#changed[@]} changed files carry the management sentinel"
+
+      - name: Open draft pull request
+        if: steps.validate.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/bootstrap-agents
+          delete-branch: true
+          commit-message: "chore: bootstrap repo agents + index (${{ inputs.mode }})"
+          title: "chore: bootstrap repo agents + index (${{ inputs.mode }})"
+          body: |
+            Generated by [`repo-agent-bootstrap@${{ inputs.templates_ref }}`](https://github.com/${{ github.repository_owner }}/repo-agent-bootstrap) in mode `${{ inputs.mode }}` (force_overwrite: `${{ inputs.force_overwrite }}`).
+
+            **Safety guards that already passed (workflow-level, deterministic):**
+            - Diff is within the bootstrap allowlist of paths.
+            - Every generated file carries the `managed-by: repo-agent-bootstrap` sentinel.
+            - Files that existed without the sentinel were skipped (or force-overwritten if you set `force_overwrite=true`).
+
+            **This PR is a DRAFT.** Review carefully before merging:
+
+            - `site/content/repo-index.md` — verify subsystem map matches reality.
+            - `taxonomy.yaml` — verify identifiers use the org-wide type vocabulary (no invented types).
+            - `docs-manifest.yaml` — confirm doc statuses (`current` / `stale` / `draft`).
+            - `.github/agents/*.agent.md` — verify the coordinator's tier examples fit this repo.
+            - `.github/instructions/*.instructions.md` — confirm only relevant languages were copied.
+
+            **What this PR does NOT touch:** source code, build files, deployment manifests.
+
+            Triggered by @${{ github.actor }}.
+          labels: |
+            automation
+            agents
+            needs-review
+          draft: true

@@ -1,0 +1,58 @@
+# managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management.
+# Drop this into a TARGET REPO at .github/workflows/repo-index-weekly.yml
+#
+# Refreshes the LLM-generated site/content/repo-index.md every Monday morning
+# by calling the bootstrap workflow in `repo-index-only` mode (the cheapest
+# mode — only re-renders the subsystem map; does not touch agents, taxonomy,
+# or docs-manifest).
+#
+# Behaviour:
+#   - Runs at 08:00 UTC every Monday (GitHub may delay shared-runner crons
+#     by minutes to a few hours).
+#   - Opens a draft PR if (and only if) the index changed. No PR = no diff.
+#   - Respects the management sentinel: if a user has removed the sentinel
+#     from repo-index.md to hand-maintain it, this workflow will skip the
+#     file and report it under "skipped (user-managed)".
+#   - Cost: one LLM run per week per repo. With `repo-index-only` mode, the
+#     bootstrap agent only walks subsystems — it does NOT regenerate the
+#     coordinator, sub-agents, instructions, taxonomy, or docs-manifest.
+#
+# To pause: disable this workflow in the Actions tab.
+# To trigger manually: Actions → "Refresh repo index (weekly)" → Run workflow.
+#
+# Replace `org` with your actual GitHub org.
+
+name: Refresh repo index (weekly)
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC. Cron syntax: minute hour dom month dow.
+    # Adjust if your team prefers a different time / day.
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Mode to run (default: repo-index-only — cheapest)"
+        type: choice
+        default: repo-index-only
+        options:
+          - repo-index-only
+          - refresh             # also refreshes taxonomy.yaml + docs-manifest.yaml
+      templates_ref:
+        description: "Templates ref (tag/branch in repo-agent-bootstrap)"
+        type: string
+        default: v1
+
+jobs:
+  refresh:
+    # IMPORTANT: replace `org` with your actual GitHub org.
+    uses: org/repo-agent-bootstrap/.github/workflows/bootstrap.yml@v1
+    with:
+      mode: ${{ inputs.mode || 'repo-index-only' }}
+      templates_ref: ${{ inputs.templates_ref || 'v1' }}
+      # Never auto-clobber hand-edited files on a scheduled run.
+      # For manual override, trigger the main 'Bootstrap agents' workflow with
+      # force_overwrite: true instead.
+      force_overwrite: false
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

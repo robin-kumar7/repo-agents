@@ -1,0 +1,34 @@
+# managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management.
+# Drop this into a TARGET REPO at .github/workflows/agent-index.yml
+#
+# Builds .agent-index/symbols.json and .agent-index/logs.json on every push to main,
+# and commits them back to main with `[skip ci]` to avoid recursion.
+#
+# Replace `org` with your actual GitHub org.
+
+name: Build agent index
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      # Don't rebuild on doc-only changes or on the bot's own commits.
+      - '.agent-index/**'
+      - '**/*.md'
+      - 'docs/**'
+      - 'site/content/**'
+  workflow_dispatch:
+    inputs:
+      templates_ref:
+        description: "Templates ref (tag/branch in repo-agent-bootstrap)"
+        type: string
+        default: v1
+
+jobs:
+  build-index:
+    # IMPORTANT: replace `org` with your actual GitHub org.
+    uses: org/repo-agent-bootstrap/.github/workflows/index.yml@v1
+    with:
+      commit_changes: true
+      templates_ref: ${{ inputs.templates_ref || 'v1' }}

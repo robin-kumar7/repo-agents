@@ -1,0 +1,39 @@
+# managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management.
+# Drop this into a TARGET REPO at .github/workflows/bootstrap-agents.yml
+#
+# Manual-trigger only. Calls the reusable bootstrap workflow in
+# org/repo-agent-bootstrap. Replace `org` with your actual GitHub org.
+
+name: Bootstrap agents
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to (re)generate"
+        type: choice
+        default: full
+        options:
+          - full
+          - refresh
+          - repo-index-only
+          - agents-only
+      templates_ref:
+        description: "Templates ref (tag/branch in repo-agent-bootstrap)"
+        type: string
+        default: v1
+      force_overwrite:
+        description: "Overwrite files lacking the management sentinel (DANGEROUS — will replace hand-edited files)"
+        type: boolean
+        default: false
+
+jobs:
+  call:
+    # IMPORTANT: replace `org` with your actual GitHub org.
+    uses: org/repo-agent-bootstrap/.github/workflows/bootstrap.yml@v1
+    with:
+      mode: ${{ inputs.mode }}
+      templates_ref: ${{ inputs.templates_ref }}
+      force_overwrite: ${{ inputs.force_overwrite }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

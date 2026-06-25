@@ -1,0 +1,106 @@
+name: Build agent index (reusable)
+
+# Reusable workflow. Called from a target repo's .github/workflows/agent-index.yml
+# via `uses: org/repo-agent-bootstrap/.github/workflows/index.yml@v1`.
+#
+# Regenerates .agent-index/symbols.json and .agent-index/logs.json from source
+# using DETERMINISTIC tools (universal-ctags + a Python log-call extractor).
+# No LLM involved.
+#
+# Commits the refreshed indices back to the triggering branch with `[skip ci]`
+# to prevent recursive runs.
+
+on:
+  workflow_call:
+    inputs:
+      commit_changes:
+        description: "Commit updated indices back to the branch"
+        required: false
+        default: true
+        type: boolean
+      templates_ref:
+        description: "Git ref of repo-agent-bootstrap to use for the scripts"
+        required: false
+        default: "v1"
+        type: string
+
+permissions:
+  contents: write
+
+# Multiple pushes to the same ref → only the latest matters.
+concurrency:
+  group: agent-index-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Fetch indexer scripts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/repo-agent-bootstrap
+          ref: ${{ inputs.templates_ref }}
+          path: .bootstrap
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            universal-ctags jq
+          ctags --version | head -1
+          jq --version
+          python3 --version
+
+      - name: Validate scripts present
+        run: |
+          set -euo pipefail
+          test -x .bootstrap/scripts/build-symbols.sh
+          test -x .bootstrap/scripts/build-logs.py
+
+      - name: Build symbols index
+        run: |
+          .bootstrap/scripts/build-symbols.sh .agent-index/symbols.json .
+
+      - name: Build logs index
+        run: |
+          python3 .bootstrap/scripts/build-logs.py \
+            --output .agent-index/logs.json \
+            --root .
+
+      - name: Report index sizes
+        run: |
+          set -euo pipefail
+          echo "=== Index sizes ==="
+          wc -c .agent-index/*.json
+          echo "=== Counts ==="
+          echo "symbols: $(jq '.symbols | length' .agent-index/symbols.json)"
+          echo "logs:    $(jq '.logs    | length' .agent-index/logs.json)"
+
+      - name: Clean up scripts checkout
+        if: always()
+        run: rm -rf .bootstrap
+
+      - name: Commit indices
+        if: inputs.commit_changes
+        run: |
+          set -euo pipefail
+          if [[ -z "$(git status --porcelain .agent-index/)" ]]; then
+            echo "No changes to .agent-index/ — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "agent-index-bot"
+          git config user.email "agent-index-bot@users.noreply.github.com"
+          git add .agent-index/
+          git commit -m "chore(agent-index): refresh symbols + logs [skip ci]"
+          git push
