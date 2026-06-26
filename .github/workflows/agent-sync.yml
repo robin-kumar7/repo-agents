@@ -1,0 +1,182 @@
+name: Sync repo-agent-bootstrap artifacts (reusable)
+
+# Reusable workflow. Called from a target repo's
+# .github/workflows/agent-sync.yml via:
+#   uses: <tooling-owner>/<tooling-repo>/.github/workflows/agent-sync.yml@v1
+#
+# DETERMINISTIC. NO LLM. Refreshes the static parts of repo-agent-bootstrap
+# in the target repo (sub-agents, instructions, layer-2 keyless workflow,
+# coordinator agent — when .bootstrap-metadata.yaml is present) by copying
+# from the tooling repo at the requested ref. Opens a draft PR if (and only
+# if) something changed.
+#
+# Triggers (from the target repo's caller):
+#   - schedule (recommended: weekly)
+#   - workflow_dispatch
+#   - repository_dispatch (so a fan-out script can trigger many targets at
+#     once via the GitHub API)
+#
+# Cost: zero LLM tokens. Just a sed + cp + git diff job.
+
+on:
+  workflow_call:
+    inputs:
+      templates_ref:
+        description: "Git ref of the tooling repo to sync from (tag, branch, sha)"
+        required: false
+        default: "v1"
+        type: string
+      base_branch:
+        description: "Branch to open the PR against (default: repo default branch)"
+        required: false
+        default: ""
+        type: string
+      pr_branch:
+        description: "Branch name for the auto-PR"
+        required: false
+        default: "chore/agent-sync"
+        type: string
+      dry_run:
+        description: "Print what would change; do not open a PR"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: agent-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Resolve tooling repo from workflow_ref
+        id: tooling
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # github.workflow_ref looks like
+          # "<owner>/<repo>/.github/workflows/agent-sync.yml@<ref>".
+          # Strip the trailing @<ref> then keep owner/repo.
+          tooling_repo="${WORKFLOW_REF%@*}"
+          tooling_repo="$(echo "$tooling_repo" | cut -d/ -f1-2)"
+          if [[ -z "$tooling_repo" || "$tooling_repo" != */* ]]; then
+            echo "::error::could not resolve tooling repo from workflow_ref='$WORKFLOW_REF'"
+            exit 1
+          fi
+          echo "repo=$tooling_repo"      >> "$GITHUB_OUTPUT"
+          echo "TOOLING_REPO=$tooling_repo" >> "$GITHUB_ENV"
+
+      - name: Determine base branch
+        id: base
+        env:
+          INPUT_BASE: ${{ inputs.base_branch }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_BASE" ]]; then
+            echo "branch=$INPUT_BASE" >> "$GITHUB_OUTPUT"
+          else
+            # Fall back to the repo's configured default branch.
+            default_branch="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef -q .defaultBranchRef.name)"
+            echo "branch=$default_branch" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_BASE: ${{ inputs.base_branch }}
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.base.outputs.branch }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Checkout tooling repo at ${{ inputs.templates_ref }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.tooling.outputs.repo }}
+          ref: ${{ inputs.templates_ref }}
+          path: ._tooling
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run sync script
+        id: sync
+        env:
+          GITHUB_AGENT_SYNC_TOOLING_REPO: ${{ steps.tooling.outputs.repo }}
+        run: |
+          set +e
+          bash ._tooling/scripts/sync-agents.sh ._tooling . \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            | tee /tmp/agent-sync-report.txt
+          rc=${PIPESTATUS[0]}
+          # 0 = no changes; 2 = changes; anything else = error.
+          if [[ "$rc" == "0" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$rc" == "2" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::sync-agents.sh failed with rc=$rc"
+            exit "$rc"
+          fi
+
+      - name: Clean up tooling checkout
+        if: always()
+        run: rm -rf ._tooling
+
+      - name: No changes — done
+        if: steps.sync.outputs.changed != 'true'
+        run: echo "Target repo already in sync with ${{ steps.tooling.outputs.repo }}@${{ inputs.templates_ref }}. Nothing to do."
+
+      - name: Dry-run summary
+        if: steps.sync.outputs.changed == 'true' && inputs.dry_run
+        run: |
+          echo "::notice::Dry-run: changes detected but not applied. See report above."
+
+      - name: Open or update draft PR
+        if: steps.sync.outputs.changed == 'true' && !inputs.dry_run
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: ${{ steps.base.outputs.branch }}
+          branch: ${{ inputs.pr_branch }}
+          delete-branch: true
+          draft: true
+          commit-message: "chore: refresh repo-agent-bootstrap artifacts to ${{ inputs.templates_ref }}"
+          title: "chore: refresh repo-agent-bootstrap artifacts to ${{ inputs.templates_ref }}"
+          body: |
+            Deterministic refresh from `${{ steps.tooling.outputs.repo }}@${{ inputs.templates_ref }}`.
+
+            **No LLM was involved.** This PR contains only the static parts of the
+            bootstrap output:
+
+            - `.github/agents/{context-discovery,planning,architecture,implementation,testing,review}.agent.md` — copied verbatim from the tooling repo's `templates/sub-agents/`.
+            - `.github/instructions/*.instructions.md` — copied verbatim from the tooling repo's `templates/instructions/`.
+            - `.github/workflows/agent-index.yml` — caller for the layer-2 keyless indexer.
+            - `.github/agents/<repo>.agent.md` — coordinator agent, re-rendered from `templates/coordinator.agent.md.tmpl` using values captured in `.github/agents/.bootstrap-metadata.yaml` at initial bootstrap.
+
+            **Not touched by this PR** (still requires the LLM-driven bootstrap workflow):
+
+            - `site/content/repo-index.md` — curated subsystem map.
+            - `taxonomy.yaml`, `docs-manifest.yaml` — typed identifier + doc indices.
+
+            Files with the `managed-by: repo-agent-bootstrap` sentinel removed are
+            treated as user-managed and are NOT overwritten — they appear in the
+            "Skipped" section of the report below.
+
+            <details><summary>Sync report</summary>
+
+            ```
+            ${{ steps.sync.outputs.report || 'see workflow logs' }}
+            ```
+
+            </details>
+
+            Opened automatically by [`agent-sync.yml`](.github/workflows/agent-sync.yml).

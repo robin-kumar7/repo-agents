@@ -1,0 +1,56 @@
+# managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management.
+# Drop this into a TARGET REPO at .github/workflows/agent-sync.yml
+#
+# DETERMINISTIC, ZERO-COST sync of the static parts of repo-agent-bootstrap
+# (sub-agents, instructions, layer-2 caller workflow, coordinator agent)
+# from the tooling repo at the requested git ref.
+#
+# Triggered:
+#   - On a weekly cron (default Monday 09:00 UTC — 1h after the index refresh).
+#   - On workflow_dispatch (target-repo owner can run it manually).
+#   - On repository_dispatch type=agent-sync (so the tooling-repo maintainer
+#     can fan out an update across many target repos with one API call —
+#     see bin/fanout-refresh.sh in the tooling repo).
+#
+# Output: a draft PR titled "chore: refresh repo-agent-bootstrap artifacts"
+# if (and only if) the tooling repo's templates have moved.
+#
+# Replace `org/repo-agent-bootstrap` with your actual tooling repo identity.
+
+name: Sync repo-agent-bootstrap artifacts
+
+on:
+  schedule:
+    # Weekly on Monday at 09:00 UTC. Adjust as desired. Set to a quiet hour
+    # so the resulting PR doesn't pile on top of other CI runs.
+    - cron: '0 9 * * 1'
+
+  workflow_dispatch:
+    inputs:
+      templates_ref:
+        description: "Git ref of the tooling repo to sync from (tag, branch, sha)"
+        type: string
+        default: v1
+      dry_run:
+        description: "Print what would change without opening a PR"
+        type: boolean
+        default: false
+
+  repository_dispatch:
+    types:
+      - agent-sync
+
+jobs:
+  sync:
+    # IMPORTANT: replace `org/repo-agent-bootstrap` with your actual tooling repo.
+    uses: org/repo-agent-bootstrap/.github/workflows/agent-sync.yml@v1
+    with:
+      templates_ref: >-
+        ${{ inputs.templates_ref
+            || github.event.client_payload.templates_ref
+            || 'v1' }}
+      dry_run: >-
+        ${{ inputs.dry_run
+            || github.event.client_payload.dry_run
+            || false }}
+    secrets: inherit

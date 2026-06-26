@@ -54,6 +54,7 @@ Read these from `process.env` (or shell `$VAR`):
      - `docs-manifest.yaml`
      - `.github/copilot-instructions.md`
      - `.github/agents/*.agent.md`
+     - `.github/agents/.bootstrap-metadata.yaml`
      - `.github/instructions/*.instructions.md`
      - `.github/workflows/agent-index.yml`
      - `.agent-index/.gitkeep`
@@ -258,6 +259,41 @@ Render `$TEMPLATES_DIR/coordinator.agent.md.tmpl` with substitutions:
 
 Save as `.github/agents/<repo-name>.agent.md`. The filename uses the repo's
 short name (e.g. `data-exporter-kafka.agent.md`).
+
+##### 5.4.1 `.github/agents/.bootstrap-metadata.yaml` (re-render hints)
+
+After writing the coordinator, also write a tiny flat-YAML file capturing
+the exact placeholder values you substituted. The downstream
+`scripts/sync-agents.sh` (run by the deterministic, zero-LLM `agent-sync`
+workflow) reads this with `awk` to re-render the coordinator on every
+template bump — no LLM required.
+
+Path: `.github/agents/.bootstrap-metadata.yaml`
+
+Format (one key per line, ALL string values double-quoted; do NOT use
+multi-line YAML, anchors, or comments — `awk` parses this):
+
+```yaml
+# managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management.
+REPO_NAME: "<the same value you substituted in 5.4>"
+REPO_ONE_LINER: "<the same value>"
+PRIMARY_LANGUAGE: "<the same value>"
+DEPLOYMENT_TARGET: "<the same value>"
+PEER_SERVICES: "<the same value>"
+TIER_SMALL_EXAMPLES: "<the same value>"
+TIER_MEDIUM_EXAMPLES: "<the same value>"
+TIER_LARGE_EXAMPLES: "<the same value>"
+TIER_MEDIUM_EXAMPLES_INLINE: "<the same value>"
+```
+
+Rules:
+- Every string value MUST be wrapped in double quotes.
+- If a value contains a literal `"`, escape it as `\"`.
+- If you couldn't determine a value, write `"TODO"` rather than leaving
+  the key out — `sync-agents.sh` requires every key to be present.
+- This file is in the allowlist (see "Hard rules").
+- This file's sentinel goes on line 1 (above the keys), same form as any
+  other YAML artifact you produce.
 
 #### 5.5 Sub-agents (copy verbatim)
 

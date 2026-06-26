@@ -1,7 +1,13 @@
 name: Build agent index (reusable)
 
 # Reusable workflow. Called from a target repo's .github/workflows/agent-index.yml
-# via `uses: org/repo-agent-bootstrap/.github/workflows/index.yml@v1`.
+# via `uses: <tooling-owner>/<tooling-repo>/.github/workflows/index.yml@v1`.
+#
+# The tooling repo's identity is derived at runtime from `github.workflow_ref`,
+# so this workflow works regardless of how the tooling repo is named or which
+# org/user owns it. (Inside a reusable workflow, `github.repository` and
+# `github.repository_owner` always point at the CALLER, not at this file's
+# home repo — we cannot use them to locate the scripts we need to fetch.)
 #
 # Regenerates .agent-index/symbols.json and .agent-index/logs.json from source
 # using DETERMINISTIC tools (universal-ctags + a Python log-call extractor).
@@ -38,6 +44,23 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Resolve tooling repo from workflow_ref
+        id: tooling
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # github.workflow_ref looks like
+          # "<owner>/<repo>/.github/workflows/index.yml@<ref>".
+          # Strip the trailing @<ref> then keep owner/repo.
+          tooling_repo="${WORKFLOW_REF%@*}"
+          tooling_repo="$(echo "$tooling_repo" | cut -d/ -f1-2)"
+          if [[ -z "$tooling_repo" || "$tooling_repo" != */* ]]; then
+            echo "::error::could not resolve tooling repo from workflow_ref='$WORKFLOW_REF'"
+            exit 1
+          fi
+          echo "repo=$tooling_repo" >> "$GITHUB_OUTPUT"
+
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
@@ -47,7 +70,7 @@ jobs:
       - name: Fetch indexer scripts
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/repo-agent-bootstrap
+          repository: ${{ steps.tooling.outputs.repo }}
           ref: ${{ inputs.templates_ref }}
           path: .bootstrap
           token: ${{ secrets.GITHUB_TOKEN }}

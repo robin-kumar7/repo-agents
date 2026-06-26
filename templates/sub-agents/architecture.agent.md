@@ -9,7 +9,7 @@ tools:
   - search/listDirectory
   - todo
 user-invocable: false
-model: ['Claude Opus 4.7 (copilot)', 'Claude Sonnet 4.5 (copilot)', 'GPT-5 (copilot)']
+model: ['Claude Sonnet 4.5 (copilot)', 'GPT-5 (copilot)']
 ---
 <!-- managed-by: repo-agent-bootstrap v1 — DO NOT EDIT directly; changes overwritten on regen. Remove this line to opt out of auto-management. -->
 
